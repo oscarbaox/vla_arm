@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The "lerobot_robot_" prefix is what lets lerobot-record / lerobot-teleoperate auto-discover this plugin.
+name = "lerobot_robot_mycobot280"
+version = "0.1.0"
+description = "LeRobot Robot plugin for the Elephant Robotics myCobot 280 Pi"
+dependencies = ["lerobot", "pymycobot>=3.6.0"]
+
+[tool.setuptools.packages.find]
+include = ["lerobot_robot_mycobot280*"]
