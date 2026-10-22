@@ -98,7 +98,7 @@ dependencies:
       - jinja2==3.1.6
       - jsonlines==4.0.0
       - kiwisolver==1.5.1
-      - lerobot==0.6.2
+      - lerobot==0.6.1
       - markdown-it-py==4.2.0
       - markupsafe==3.0.3
       - matplotlib==3.11.2
