@@ -1,0 +1,28 @@
+{
+  "wall_start": "2026-10-20T19:44:36.485063",
+  "fps": 15,
+  "cameras": [
+    {
+      "id": 0,
+      "name": "Microsoft\u00ae LifeCam Cinema(TM)",
+      "index": 4,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "id": 1,
+      "name": "USB Camera: USB Camera",
+      "index": 6,
+      "width": 640,
+      "height": 480
+    }
+  ],
+  "arm_host": "192.168.10.2",
+  "arm_port": 9999,
+  "arm_samples": 137,
+  "frame_counts": [
+    194,
+    701
+  ],
+  "duration": 25.85547703100019
+}
