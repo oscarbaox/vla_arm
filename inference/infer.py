@@ -113,6 +113,12 @@ def main():
     parser = argparse.ArgumentParser(description="Run SmolVLA against the arm server.")
     parser.add_argument("--host", default="192.168.10.2")
     parser.add_argument("--port", type=int, default=9999)
+    parser.add_argument(
+        "--n-exec",
+        type=int,
+        default=10,
+        help="Actions to execute from each predicted chunk before re-planning.",
+    )
     args = parser.parse_args()
 
     # 1. Load the SmolVLA policy configuration and weights
@@ -131,6 +137,7 @@ def main():
     )
 
     policy.eval()
+    policy.reset()
 
     # 2. Define your task instruction
     # SmolVLA parses text embeddings to condition its motor sequences
@@ -147,6 +154,7 @@ def main():
         with socket.create_connection((args.host, args.port)) as sock:
             print(f"Connected to {args.host}:{args.port}")
             print("Starting deployment loop. Press Ctrl+C to stop.")
+            pending = []  # actions left from the last predicted chunk
             with sock.makefile("r") as stream, torch.no_grad():
                 for line in stream:
                     raw = line.strip()
@@ -157,34 +165,39 @@ def main():
                         print(f"Wrong format: {raw!r}")
                         continue
 
-                    ret_top, frame_top = cap_top.read()
-                    ret_wrist, frame_wrist = cap_wrist.read()
-                    if not ret_top or not ret_wrist:
-                        print("Failed to grab frames from one or more cameras.")
-                        break
+                    if not pending:
+                        ret_top, frame_top = cap_top.read()
+                        ret_wrist, frame_wrist = cap_wrist.read()
+                        if not ret_top or not ret_wrist:
+                            print("Failed to grab frames from one or more cameras.")
+                            break
 
-                    # Shape: (1, 3, 224, 224)
-                    tensor_top = preprocess_image(frame_top).unsqueeze(0).to(device)
-                    tensor_wrist = preprocess_image(frame_wrist).unsqueeze(0).to(device)
-                    arm_state = torch.tensor([state["angles"]], dtype=torch.float32).to(
-                        device
-                    )
+                        # Shape: (1, 3, 224, 224)
+                        tensor_top = preprocess_image(frame_top).unsqueeze(0).to(device)
+                        tensor_wrist = (
+                            preprocess_image(frame_wrist).unsqueeze(0).to(device)
+                        )
+                        arm_state = torch.tensor(
+                            [state["angles"]], dtype=torch.float32
+                        ).to(device)
 
-                    # Double check your training config keys
-                    observation = {
-                        "observation.images.camera1": tensor_top,
-                        "observation.images.camera2": tensor_wrist,
-                        "task": task_instruction,
-                        "observation.state": arm_state,
-                    }
+                        # Double check your training config keys
+                        observation = {
+                            "observation.images.camera1": tensor_top,
+                            "observation.images.camera2": tensor_wrist,
+                            "task": task_instruction,
+                            "observation.state": arm_state,
+                        }
 
-                    batch = preprocess(observation)
-                    with torch.inference_mode():
-                        action = policy.select_action(batch)
-                    action = postprocess(action)
+                        batch = preprocess(observation)
+                        # Shape: (1, chunk_size, action_dim)
+                        chunk = policy.predict_action_chunk(batch)
+                        chunk = postprocess(chunk)
+                        pending = list(chunk.cpu().numpy()[0][: args.n_exec])
+                        print(f"Predicted chunk, executing {len(pending)} steps")
 
-                    # Strip batch dimension -> shape: (num_joints,)
-                    motor_commands = action.cpu().numpy()[0]
+                    # Pop the next action from the chunk -> shape: (action_dim,)
+                    motor_commands = pending.pop(0)
                     print(f"State: {state['angles']} -> Action: {motor_commands}")
 
                     # TODO: add safety checks / smoothing before sending
