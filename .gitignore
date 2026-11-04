@@ -1,1 +1,4 @@
 __pycache__/
+logs/
+outputs/
+phone_to_so100/

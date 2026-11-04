@@ -111,13 +111,13 @@ def parse_message(raw):
 
 def main():
     parser = argparse.ArgumentParser(description="Run SmolVLA against the arm server.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--host", default="192.168.10.2")
+    parser.add_argument("--port", type=int, default=9999)
     args = parser.parse_args()
 
     # 1. Load the SmolVLA policy configuration and weights
     # Replace with your local checkpoint path or Hugging Face repo ID
-    policy_path = "lerobot/smolvla_base"
+    policy_path = "/home/oscarbao/Desktop/vla_arm/outputs/020000/pretrained_model"
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading SmolVLA policy from {policy_path} onto {device}...")
@@ -127,7 +127,7 @@ def main():
 
     preprocess, postprocess = make_pre_post_processors(
         policy.config,
-        pretrained_path="lerobot/smolvla_base",  # or your fine-tuned checkpoint
+        pretrained_path=policy_path,  # or your fine-tuned checkpoint
     )
 
     policy.eval()
