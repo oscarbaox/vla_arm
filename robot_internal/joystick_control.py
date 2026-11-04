@@ -19,12 +19,19 @@ mc = MyCobot280(PORT, BAUD)
 mc.set_fresh_mode(1)
 time.sleep(0.5)
 
+mc.send_angles(HOME, 50)  # blocking; arm goes home
+time.sleep(3)
+
 lock = threading.Lock()
 target = mc.get_coords()
 step = 2.0  # mm per tick (XYZ) at full deflection; rotations use step / 2
 speed = 40  # 10-100
 going_home = False
 running = True
+angles = None  # last angles read from the arm; used for streaming to clients
+mc_lock = threading.Lock()  # serializes serial access across threads
+ARRIVE_TOL = 3.0  # degrees; per-joint tolerance for "arm reached the commanded pose"
+ARRIVE_TIMEOUT = 5.0  # seconds to wait for arrival before giving up
 
 clients = []
 clients_lock = threading.Lock()
@@ -51,6 +58,68 @@ def broadcast(payload):
                 pass
 
 
+def wait_until_reached(goal):
+    """Block until all joints are within ARRIVE_TOL of goal (or timeout)."""
+    deadline = time.time() + ARRIVE_TIMEOUT
+    time.sleep(0.2)  # let the move start
+    while running and time.time() < deadline:
+        with mc_lock:
+            try:
+                cur = mc.get_angles()
+            except Exception:
+                cur = None
+        if (
+            cur
+            and len(cur) == 6
+            and all(abs(c - g) <= ARRIVE_TOL for c, g in zip(cur, goal))
+        ):
+            return
+        time.sleep(0.05)
+
+
+def handle_client(conn):
+    """Read newline-delimited JSON {"angles": [...], "speed": n} and send_angles."""
+    buf = b""
+    while running:
+        try:
+            chunk = conn.recv(4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        # coalesce: only the newest complete message matters while the arm is busy
+        *lines, buf = buf.split(b"\n")
+        latest = None
+        for line in lines:
+            try:
+                msg = json.loads(line)
+                cmd = [float(v) for v in msg["angles"]]
+                spd = int(max(1, min(100, msg.get("speed", speed))))
+            except (ValueError, KeyError, TypeError):
+                continue
+            if len(cmd) >= 6:
+                latest = (cmd, spd)
+        if latest is None:
+            continue
+        cmd, spd = latest
+        with mc_lock:
+            try:
+                mc.send_angles(cmd[:6], spd, _async=True)
+            except Exception:
+                pass
+        if len(cmd) > 6:  # optional 7th value is the gripper servo angle
+            servo.angle = max(-90, min(90, cmd[6]))
+        wait_until_reached(cmd[:6])
+    with clients_lock:
+        if conn in clients:
+            clients.remove(conn)
+    try:
+        conn.close()
+    except OSError:
+        pass
+
+
 def accept_clients():
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -66,26 +135,22 @@ def accept_clients():
         with clients_lock:
             clients.append(conn)
         print(f"\nclient connected: {addr}")
+        threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
     srv.close()
 
 
 def streamer():
-    """Background loop: push the coord target to the arm and stream joint angles."""
-    period = 1.0 / TICK_HZ
+    """Background loop: stream joint angles to clients (send_coords disabled)."""
+    global angles
     while running:
         if going_home:
             time.sleep(0.1)
             continue
-        with lock:
-            t = target[:]
-        try:
-            mc.send_coords(t, speed, 1, _async=True)
-        except Exception:
-            pass
-        try:
-            angles = mc.get_angles()
-        except Exception:
-            angles = None
+        with mc_lock:
+            try:
+                angles = mc.get_angles()
+            except Exception:
+                angles = None
         if angles and isinstance(angles, (list, tuple)) and len(angles) == 6:
             broadcast(
                 {
@@ -114,8 +179,8 @@ print(f"Connected to: {controller.get_name()}")
 AXES = {  # axis index -> (coord index, sign)
     0: (1, -1),  # left stick X  -> Y
     1: (0, -1),  # left stick Y  -> X
-    2: (5, +1),  # right stick X -> RZ
-    3: (2, -1),  # right stick Y -> Z
+    3: (5, +1),  # right stick X -> RZ
+    4: (2, -1),  # right stick Y -> Z
 }
 
 BUTTONS = {
@@ -144,7 +209,7 @@ try:
                 if action == "grip_open":
                     servo.angle = -90
                 elif action == "grip_close":
-                    servo.angle = 0
+                    servo.angle = 90
                 elif action == "step_down":
                     step = max(0.5, step - 0.5)
                     print("\nstep = %.1f" % step)
@@ -170,7 +235,8 @@ try:
                 with lock:
                     target[idx] += sign * val * (step if idx < 3 else step / 2)
                     target = clamp(target)
-        print("\rtarget: " + str([round(c, 1) for c in target]), end="")
+        print("target: " + str([round(c, 1) for c in target]))
+        print("angles: " + str([round(a, 1) for a in angles]) if angles else "")
         clock.tick(TICK_HZ)
 finally:
     running = False
