@@ -125,6 +125,9 @@ def streamer():
         if going_home:
             time.sleep(0.1)
             continue
+        with lock:
+            t = target[:]
+        mc.send_coords(target, speed, _async=True)
         with mc_lock:
             try:
                 angles = mc.get_angles()
