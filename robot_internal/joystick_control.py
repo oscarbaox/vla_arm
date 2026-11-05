@@ -58,25 +58,6 @@ def broadcast(payload):
                 pass
 
 
-def wait_until_reached(goal):
-    """Block until all joints are within ARRIVE_TOL of goal (or timeout)."""
-    deadline = time.time() + ARRIVE_TIMEOUT
-    time.sleep(0.2)  # let the move start
-    while running and time.time() < deadline:
-        with mc_lock:
-            try:
-                cur = mc.get_angles()
-            except Exception:
-                cur = None
-        if (
-            cur
-            and len(cur) == 6
-            and all(abs(c - g) <= ARRIVE_TOL for c, g in zip(cur, goal))
-        ):
-            return
-        time.sleep(0.05)
-
-
 def handle_client(conn):
     """Read newline-delimited JSON {"angles": [...], "speed": n} and send_angles."""
     buf = b""
@@ -103,14 +84,12 @@ def handle_client(conn):
         if latest is None:
             continue
         cmd, spd = latest
-        with mc_lock:
-            try:
-                mc.send_angles(cmd[:6], spd, _async=True)
-            except Exception:
-                pass
+        try:
+            mc.send_angles(cmd[:6], spd, _async=True)
+        except Exception:
+            pass
         if len(cmd) > 6:  # optional 7th value is the gripper servo angle
             servo.angle = max(-90, min(90, cmd[6]))
-        wait_until_reached(cmd[:6])
     with clients_lock:
         if conn in clients:
             clients.remove(conn)
