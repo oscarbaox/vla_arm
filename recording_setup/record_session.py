@@ -30,12 +30,14 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from camera import (
     TARGET_LIFECAM_NAME,
     TARGET_USBCAM_NAME,
     find_camera_index,
     list_v4l2_devices,
+    rs,
 )
 from client import parse_message
 
@@ -100,6 +102,53 @@ class CameraWorker(threading.Thread):
     def close(self):
         if self.cap is not None:
             self.cap.release()
+
+
+class RealSenseWorker(CameraWorker):
+    """RealSense color stream via pyrealsense2 (no V4L2 node needed).
+
+    ``index`` holds the device serial number.
+    """
+
+    def open(self):
+        config = rs.config()
+        config.enable_device(self.index)
+        config.enable_stream(
+            rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps
+        )
+        self.pipeline = rs.pipeline()
+        profile = self.pipeline.start(config)
+        sensor = profile.get_device().first_color_sensor()
+        if sensor.supports(rs.option.auto_exposure_priority):
+            # Keep the firmware from dropping the frame rate in low light.
+            sensor.set_option(rs.option.auto_exposure_priority, 0)
+        self.cap = self.pipeline
+
+    def run(self):
+        while not self.session.stop_event.is_set():
+            try:
+                frames = self.pipeline.wait_for_frames(5000)
+            except RuntimeError as exc:
+                print(f"RealSense {self.index} frame error: {exc}")
+                continue
+            color = frames.get_color_frame()
+            if not color:
+                continue
+            frame = np.asanyarray(color.get_data()).copy()
+            now = time.monotonic()
+            with self.session.lock:
+                self.latest_frame = frame
+                recording = self.session.recording
+                t0 = self.session.t0
+            if recording and t0 is not None:
+                self.queue.put((now - t0, frame))
+
+    def close(self):
+        if self.cap is not None:
+            try:
+                self.pipeline.stop()
+            except RuntimeError:
+                pass
 
 
 class WriterWorker(threading.Thread):
@@ -234,11 +283,21 @@ def annotate(frame, cam_id, arm, t_elapsed, recording):
 
 def discover_cameras():
     devices = list_v4l2_devices()
-    found = [
-        (TARGET_LIFECAM_NAME, find_camera_index(devices, TARGET_LIFECAM_NAME)),
-        (TARGET_USBCAM_NAME, find_camera_index(devices, TARGET_USBCAM_NAME)),
-    ]
-    return [(name, idx) for name, idx in found if idx is not None]
+    found = []
+    idx = find_camera_index(devices, TARGET_LIFECAM_NAME)
+    if idx is not None:
+        found.append((TARGET_LIFECAM_NAME, idx, CameraWorker))
+    if rs is None:
+        print("Warning: pyrealsense2 not installed; skipping RealSense.")
+    else:
+        try:
+            for dev in rs.context().query_devices():
+                serial = dev.get_info(rs.camera_info.serial_number)
+                found.append((TARGET_USBCAM_NAME, serial, RealSenseWorker))
+                break
+        except RuntimeError as exc:
+            print(f"Warning: RealSense query failed: {exc}")
+    return found
 
 
 def main():
@@ -262,13 +321,13 @@ def main():
     cams = discover_cameras()
     if len(cams) < 2:
         raise SystemExit(
-            f"Expected 2 cameras, found {len(cams)}: {[n for n, _ in cams]}"
+            f"Expected 2 cameras, found {len(cams)}: {[c[0] for c in cams]}"
         )
 
     session = Session()
     cameras = []
-    for cam_id, (name, index) in enumerate(cams):
-        worker = CameraWorker(
+    for cam_id, (name, index, worker_cls) in enumerate(cams):
+        worker = worker_cls(
             cam_id, index, name, args.width, args.height, args.fps, session
         )
         worker.open()
