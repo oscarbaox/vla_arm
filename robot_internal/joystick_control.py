@@ -29,7 +29,6 @@ speed = 40  # 10-100
 going_home = False
 running = True
 angles = None  # last angles read from the arm; used for streaming to clients
-mc_lock = threading.Lock()  # serializes serial access across threads
 ARRIVE_TOL = 3.0  # degrees; per-joint tolerance for "arm reached the commanded pose"
 ARRIVE_TIMEOUT = 5.0  # seconds to wait for arrival before giving up
 
@@ -128,11 +127,10 @@ def streamer():
         with lock:
             t = target[:]
         mc.send_coords(target, speed, _async=True)
-        with mc_lock:
-            try:
-                angles = mc.get_angles()
-            except Exception:
-                angles = None
+        try:
+            angles = mc.get_angles()
+        except Exception:
+            angles = None
         if angles and isinstance(angles, (list, tuple)) and len(angles) == 6:
             broadcast(
                 {

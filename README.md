@@ -144,6 +144,15 @@ python3 make_episode.py recordings/session_20261020_195000 \
     --append
 ```
 
+```bash
+python3 make_episode.py recordings \
+    --repo-id local/datasetv2 \
+    --root datasetv2 \
+    --task "pick up the wooden block and place it in the red box" \
+    --action-from next \
+    --overwrite
+```
+
 #### Arguments
 
 | Flag | Default | Description |
